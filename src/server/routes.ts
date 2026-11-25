@@ -233,21 +233,29 @@ export function createApiRouter() {
 
       if (existing.length > 0) {
         const current = existing[0];
-        const isPreapprovedPlaceholder = current.uid.startsWith('preapproved:');
-        if (current.passwordHash || !isPreapprovedPlaceholder) {
+        if (current.passwordHash) {
           return res.status(409).json({
             code: 'EMAIL_EXISTS',
             error:
-              'Email ini sudah terdaftar. Silakan masuk dengan kata sandi Anda atau melalui Akun Google.',
+              'Email ini sudah terdaftar. Silakan masuk dengan email dan kata sandi Anda.',
           });
         }
 
-        // Pre-approved by Superadmin: allow setting initial password on first claim
+        // First-time local password activation (pre-approved by Superadmin or migrated account without password)
+        const isMaster = normalizedEmail === MASTER_ADMIN_EMAIL;
         const [updated] = await db
           .update(users)
           .set({
             fullName: parsed.fullName || current.fullName,
             passwordHash: hashPassword(parsed.password),
+            ...(isMaster
+              ? {
+                  role: 'MANAGEMENT' as AppRole,
+                  approvalStatus: 'APPROVED' as ApprovalStatus,
+                  approvedAt: current.approvedAt || new Date(),
+                  isActive: true,
+                }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(users.id, current.id))
@@ -364,10 +372,26 @@ export function createApiRouter() {
         .where(sql`lower(${users.email}) = ${normalizedEmail}`)
         .limit(1);
 
-      if (!found || !found.passwordHash || !verifyPassword(password, found.passwordHash)) {
+      if (!found) {
         return res.status(401).json({
           code: 'INVALID_CREDENTIALS',
-          error: 'Email atau kata sandi salah. Jika akun terdaftar via Google tanpa kata sandi, gunakan Masuk dengan Google.',
+          error: 'Email atau kata sandi salah.',
+        });
+      }
+
+      if (!found.passwordHash) {
+        return res.status(401).json({
+          code: 'PASSWORD_NOT_SET',
+          email: found.email,
+          error:
+            'Akun ini belum memiliki kata sandi lokal. Silakan buka tab "Daftar / Aktivasi Akun" untuk membuat kata sandi pertama Anda.',
+        });
+      }
+
+      if (!verifyPassword(password, found.passwordHash)) {
+        return res.status(401).json({
+          code: 'INVALID_CREDENTIALS',
+          error: 'Email atau kata sandi salah.',
         });
       }
 
@@ -424,7 +448,7 @@ export function createApiRouter() {
     }
   });
 
-  // All business endpoints require verified Firebase ID token or DB session
+  // All business endpoints require verified SQL session token
   router.use(requireAuth);
 
   // ==========================================================================
@@ -3986,12 +4010,19 @@ export function createApiRouter() {
         email: z.string().email(),
         fullName: z.string().min(2),
         role: z.enum(['KAE_SALES', 'SPV_SAMPLING', 'MANAGEMENT']).default('KAE_SALES'),
+        password: z
+          .string()
+          .min(8, 'Kata sandi awal minimal 8 karakter')
+          .max(128)
+          .optional()
+          .or(z.literal('')),
       });
       const parsed = schema.parse(req.body);
       const normalizedEmail = parsed.email.trim().toLowerCase();
       if (normalizedEmail === MASTER_ADMIN_EMAIL && parsed.role !== 'MANAGEMENT') {
         return res.status(403).json({ error: 'Akun Superadmin tidak dapat diubah perannya.' });
       }
+      const initialPasswordHash = parsed.password ? hashPassword(parsed.password) : undefined;
 
       const existing = await db
         .select()
@@ -4006,8 +4037,9 @@ export function createApiRouter() {
         const [updated] = await db
           .update(users)
           .set({
-            fullName: parsed.fullName,
+            fullName: parsed.fullName.trim(),
             role: parsed.role,
+            ...(initialPasswordHash ? { passwordHash: initialPasswordHash } : {}),
             approvalStatus: 'APPROVED',
             approvedBy: req.appUser!.id,
             approvedAt: new Date(),
@@ -4035,6 +4067,7 @@ export function createApiRouter() {
           uid: `preapproved:${normalizedEmail}`,
           email: normalizedEmail,
           fullName: parsed.fullName.trim(),
+          ...(initialPasswordHash ? { passwordHash: initialPasswordHash } : {}),
           role: parsed.role,
           approvalStatus: 'APPROVED',
           approvedBy: req.appUser!.id,

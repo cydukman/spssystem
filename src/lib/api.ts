@@ -1,11 +1,4 @@
-import type { User } from 'firebase/auth';
-
-let currentFirebaseUser: User | null = null;
 let localSessionToken: string | null = null;
-
-export function setApiAuthUser(user: User | null) {
-  currentFirebaseUser = user;
-}
 
 export function setLocalAuthToken(token: string | null) {
   localSessionToken = token;
@@ -16,9 +9,6 @@ export function getLocalAuthToken(): string | null {
 }
 
 export async function getAuthToken(): Promise<string> {
-  if (currentFirebaseUser) {
-    return currentFirebaseUser.getIdToken();
-  }
   if (localSessionToken) {
     return localSessionToken;
   }
@@ -119,7 +109,7 @@ export async function apiFetch<T>(
     } catch {
       // ignore non-json error body
     }
-    if (res.status === 401 && !currentFirebaseUser) {
+    if (res.status === 401) {
       localSessionToken = null;
     }
     throw new ApiError(errMsg, res.status, errCode, errEmail);

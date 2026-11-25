@@ -37,6 +37,7 @@ export function UsersSettingsView({
     email: '',
     fullName: '',
     role: 'KAE_SALES' as AppRole,
+    password: '',
   });
 
   const [spsPattern, setSpsPattern] = useState('{SEQ}/SPS/AKL/{ROMAN_MONTH}/{YEAR}');
@@ -133,7 +134,7 @@ export function UsersSettingsView({
         body: JSON.stringify(preapproveForm),
       });
       setPreapproveOpen(false);
-      setPreapproveForm({ email: '', fullName: '', role: 'KAE_SALES' });
+      setPreapproveForm({ email: '', fullName: '', role: 'KAE_SALES', password: '' });
       setSuccessMsg('Email pengguna berhasil didaftarkan & disetujui oleh Master Admin.');
       await loadData();
       onChanged();
@@ -359,18 +360,18 @@ export function UsersSettingsView({
           open={preapproveOpen}
           onClose={() => setPreapproveOpen(false)}
           title="Daftarkan & Setujui Pengguna Baru"
-          subtitle="Email (Google atau domain perusahaan) yang didaftarkan di sini dapat langsung masuk sesuai peran yang ditetapkan."
+          subtitle="Pengguna yang didaftarkan di sini dapat langsung masuk menggunakan email dan kata sandi lokal sesuai peran yang ditetapkan."
           maxWidth="max-w-md"
         >
           <form onSubmit={handlePreapproveSubmit} className="space-y-3">
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Alamat Email (Google / Domain Sendiri) *</label>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Alamat Email *</label>
               <input
                 type="email"
                 required
                 value={preapproveForm.email}
                 onChange={(e) => setPreapproveForm({ ...preapproveForm, email: e.target.value })}
-                placeholder="nama@domainperusahaan.co.id"
+                placeholder="nama@perusahaan.co.id"
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
               />
             </div>
@@ -396,17 +397,30 @@ export function UsersSettingsView({
                 {isSuperadmin && <option value="MANAGEMENT">Superadmin / Management</option>}
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Kata Sandi Awal (opsional, min. 8 karakter)
+              </label>
+              <input
+                type="password"
+                minLength={8}
+                value={preapproveForm.password}
+                onChange={(e) => setPreapproveForm({ ...preapproveForm, password: e.target.value })}
+                placeholder="Kosongkan jika pengguna akan membuat sandi sendiri"
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
+              />
+            </div>
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setPreapproveOpen(false)}
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md"
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md cursor-pointer"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 text-sm font-medium text-white bg-[#25AC43] hover:bg-[#1e8e36] rounded-md"
+                className="px-4 py-2 text-sm font-medium text-white bg-[#25AC43] hover:bg-[#1e8e36] rounded-md cursor-pointer"
               >
                 Simpan &amp; Setujui
               </button>

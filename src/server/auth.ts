@@ -1,9 +1,8 @@
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { and, eq, gt, sql } from 'drizzle-orm';
-import { adminAuth } from '../lib/firebase-admin.ts';
+import { and, eq, gt } from 'drizzle-orm';
 import { db } from '../db/index.ts';
-import { notifications, userSessions, users } from '../db/schema.ts';
+import { userSessions, users } from '../db/schema.ts';
 
 export type AppRole = 'KAE_SALES' | 'SPV_SAMPLING' | 'MANAGEMENT';
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -158,120 +157,6 @@ export async function findSessionUserByToken(rawToken: string) {
   return dbUser;
 }
 
-export async function getOrCreateDbUser(decoded: {
-  uid: string;
-  email?: string;
-  name?: string;
-  picture?: string;
-}) {
-  const email = (decoded.email || `${decoded.uid}@ankal.local`).trim();
-  const normalizedEmail = email.toLowerCase();
-  const existingByUid = await db
-    .select()
-    .from(users)
-    .where(eq(users.uid, decoded.uid))
-    .limit(1);
-
-  if (existingByUid.length > 0) {
-    const current = existingByUid[0];
-    const isMasterEmail = normalizedEmail === MASTER_ADMIN_EMAIL;
-    const updated = await db
-      .update(users)
-      .set({
-        email,
-        avatarUrl: decoded.picture || current.avatarUrl || '',
-        ...(isMasterEmail
-          ? {
-              role: 'MANAGEMENT',
-              approvalStatus: 'APPROVED',
-              approvedAt: current.approvedAt || new Date(),
-              isActive: true,
-            }
-          : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(users.uid, decoded.uid))
-      .returning();
-    return updated[0];
-  }
-
-  // Check if email already exists (pre-approved by Superadmin or registered with corporate email/password)
-  const existingByEmail = await db
-    .select()
-    .from(users)
-    .where(sql`lower(${users.email}) = ${normalizedEmail}`)
-    .limit(1);
-
-  if (existingByEmail.length > 0) {
-    const pre = existingByEmail[0];
-    const isMasterEmail = normalizedEmail === MASTER_ADMIN_EMAIL;
-    const updated = await db
-      .update(users)
-      .set({
-        uid: decoded.uid,
-        email,
-        fullName: decoded.name || pre.fullName,
-        avatarUrl: decoded.picture || pre.avatarUrl || '',
-        ...(isMasterEmail
-          ? {
-              role: 'MANAGEMENT',
-              approvalStatus: 'APPROVED',
-              approvedAt: pre.approvedAt || new Date(),
-              isActive: true,
-            }
-          : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, pre.id))
-      .returning();
-    return updated[0];
-  }
-
-  // Only designated Master Admin email auto-approves as MANAGEMENT; all other new users require Superadmin approval
-  const isInitialMaster = normalizedEmail === MASTER_ADMIN_EMAIL;
-
-  const initialRole: AppRole = isInitialMaster ? 'MANAGEMENT' : 'KAE_SALES';
-  const initialApproval: ApprovalStatus = isInitialMaster ? 'APPROVED' : 'PENDING';
-
-  const inserted = await db
-    .insert(users)
-    .values({
-      uid: decoded.uid,
-      email,
-      fullName: decoded.name || email.split('@')[0] || 'Pengguna ANKAL',
-      role: initialRole,
-      approvalStatus: initialApproval,
-      approvedAt: isInitialMaster ? new Date() : null,
-      avatarUrl: decoded.picture || '',
-      isActive: true,
-    })
-    .onConflictDoUpdate({
-      target: users.uid,
-      set: {
-        email,
-        updatedAt: new Date(),
-      },
-    })
-    .returning();
-
-  const createdUser = inserted[0];
-
-  if (createdUser.approvalStatus === 'PENDING') {
-    await db.insert(notifications).values({
-      recipientRole: 'MANAGEMENT',
-      eventType: 'USER_REGISTRATION_PENDING',
-      title: 'Permintaan Registrasi Pengguna Baru',
-      recordNumber: createdUser.email,
-      description: `${createdUser.fullName} (${createdUser.email}) mendaftar via Google dan menunggu persetujuan Superadmin.`,
-      targetRoute: 'users',
-      targetId: createdUser.id,
-      actionRequired: true,
-    });
-  }
-
-  return createdUser;
-}
-
 function passesCookieCsrfCheck(req: Request): boolean {
   const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase());
   if (!mutating) return true;
@@ -327,18 +212,12 @@ export const requireAuth = async (
   }
 
   try {
-    let dbUser;
-    if (token.startsWith('ankal_sess_')) {
-      dbUser = await findSessionUserByToken(token);
-      if (!dbUser) {
-        return res.status(401).json({
-          code: 'INVALID_TOKEN',
-          error: 'Sesi autentikasi tidak valid atau telah kedaluwarsa.',
-        });
-      }
-    } else {
-      const decodedToken = await adminAuth.verifyIdToken(token);
-      dbUser = await getOrCreateDbUser(decodedToken);
+    const dbUser = await findSessionUserByToken(token);
+    if (!dbUser) {
+      return res.status(401).json({
+        code: 'INVALID_TOKEN',
+        error: 'Sesi autentikasi tidak valid atau telah kedaluwarsa.',
+      });
     }
 
     if (dbUser.approvalStatus === 'REJECTED') {

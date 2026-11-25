@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
 import {
   LayoutDashboard,
   ClipboardList,
@@ -22,14 +21,12 @@ import {
   Menu,
   X,
 } from 'lucide-react';
-import { auth } from './lib/firebase';
 import {
   ApiError,
   apiFetch,
   getLocalAuthToken,
   publicPostJson,
   restoreLocalSession,
-  setApiAuthUser,
   setLocalAuthToken,
 } from './lib/api';
 import type { AppRole, AppUser, NotificationItem } from './types/ankal';
@@ -131,7 +128,6 @@ function getDefaultRouteForRole(role: AppRole): NavKey {
 
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
-  const [fbEmail, setFbEmail] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
   const [appUser, setAppUser] = useState<AppUser | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -181,20 +177,12 @@ export default function App() {
     setAuthError(null);
     setAuthErrorCode(null);
     setNotifications([]);
-    if (auth.currentUser) {
-      await signOut(auth);
-    }
   };
 
   useEffect(() => {
     let mounted = true;
-    const unsub = onAuthStateChanged(auth, async (fbUser) => {
-      if (!mounted) return;
-      setApiAuthUser(fbUser);
-      setFbEmail(fbUser?.email || null);
-      if (fbUser) {
-        await fetchProfileAndNotifications();
-      } else {
+    (async () => {
+      try {
         const token = getLocalAuthToken() || (await restoreLocalSession());
         if (!mounted) return;
         if (token) {
@@ -205,12 +193,12 @@ export default function App() {
           setAuthErrorCode(null);
           setNotifications([]);
         }
+      } finally {
+        if (mounted) setAuthReady(true);
       }
-      if (mounted) setAuthReady(true);
-    });
+    })();
     return () => {
       mounted = false;
-      unsub();
     };
   }, []);
 
@@ -254,7 +242,7 @@ export default function App() {
   }
 
   if (!appUser) {
-    const blockedEmail = fbEmail || pendingEmail;
+    const blockedEmail = pendingEmail;
     if (
       blockedEmail &&
       (authErrorCode === 'REGISTRATION_PENDING' ||
@@ -293,21 +281,12 @@ export default function App() {
               )}
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
-              {fbEmail && (
-                <button
-                  type="button"
-                  onClick={() => fetchProfileAndNotifications()}
-                  className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 cursor-pointer"
-                >
-                  Periksa Status Lagi
-                </button>
-              )}
               <button
                 type="button"
                 onClick={handleSignOut}
                 className="px-3.5 py-2 text-xs font-medium text-white bg-[#25AC43] hover:bg-[#1e8e36] rounded-md cursor-pointer"
               >
-                {fbEmail ? 'Keluar / Ganti Akun' : 'Kembali ke Halaman Login'}
+                Kembali ke Halaman Login
               </button>
             </div>
           </div>
