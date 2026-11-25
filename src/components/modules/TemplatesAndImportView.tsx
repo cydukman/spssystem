@@ -7,16 +7,25 @@ import {
   FileText,
   Eye,
   CheckCircle2,
-  XCircle,
   AlertTriangle,
   Sparkles,
   ExternalLink,
   Trash2,
+  Plus,
 } from 'lucide-react';
 import { apiFetch, openAuthenticatedPdf } from '../../lib/api';
 import type { AppUser, SpsDocument, SpsTemplate } from '../../types/ankal';
 import { EmptyState, ModalDialog, SkeletonTable, StatusTag, formatDateId } from '../ui/Common';
 import { SpsPrintPreview } from '../SpsPrintPreview';
+
+interface ExtractedMatrixItem {
+  matrix_name: string;
+  sampling_point_count: number;
+  sampling_points: string;
+  parameters: string;
+  subcontracted_parameters: string;
+  applicable_regulation: string;
+}
 
 interface ImportRecord {
   id: string;
@@ -76,6 +85,7 @@ export function TemplatesAndImportView({
   });
   const [activeBatch, setActiveBatch] = useState<ImportBatch | null>(null);
   const [editingRecord, setEditingRecord] = useState<ImportRecord | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
   const [editFields, setEditFields] = useState({
     document_number: '',
     customer_name: '',
@@ -85,7 +95,10 @@ export function TemplatesAndImportView({
     job_name: '',
     sampling_date: '',
     sampling_location: '',
+    sampling_personnel_text: '',
+    sampling_activities: '',
     notes: '',
+    matrices: [] as ExtractedMatrixItem[],
     resolveDuplicateAsSeparate: false,
   });
   const [deleteTargetTpl, setDeleteTargetTpl] = useState<SpsTemplate | null>(null);
@@ -93,7 +106,7 @@ export function TemplatesAndImportView({
 
   const canManage = user.role === 'SPV_SAMPLING' || user.role === 'MANAGEMENT';
 
-  const loadData = async () => {
+  const loadData = async (preferredBatchId?: string) => {
     setLoading(true);
     try {
       const [tpls, bList] = await Promise.all([
@@ -102,9 +115,14 @@ export function TemplatesAndImportView({
       ]);
       setTemplates(tpls);
       setBatches(bList);
-      if (activeBatch) {
-        const refreshed = bList.find((b) => b.id === activeBatch.id);
-        if (refreshed) setActiveBatch(refreshed);
+      const targetId = preferredBatchId ?? activeBatch?.id;
+      if (targetId) {
+        const refreshed = bList.find((b) => b.id === targetId);
+        if (refreshed) {
+          setActiveBatch(refreshed);
+        } else if (bList.length > 0) {
+          setActiveBatch(bList[0]);
+        }
       } else if (bList.length > 0) {
         setActiveBatch(bList[0]);
       }
@@ -188,7 +206,7 @@ export function TemplatesAndImportView({
       });
       setSuccessMsg(`Berhasil mengekstrak ${res.records.length} baris dari ${file.name}.`);
       setActiveBatch({ ...res.batch, records: res.records });
-      await loadData();
+      await loadData(res.batch.id);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Gagal mengunggah file Excel/CSV.');
     } finally {
@@ -219,7 +237,7 @@ export function TemplatesAndImportView({
         `Berhasil mengekstrak ${res.records.length} dokumen SPS dari ${res.pageCount} halaman (${res.extractionMethod}).`
       );
       setActiveBatch({ ...res.batch, records: res.records });
-      await loadData();
+      await loadData(res.batch.id);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Gagal mengekstrak PDF SPS.');
     } finally {
@@ -243,7 +261,7 @@ export function TemplatesAndImportView({
         `PDF Historis ANKAL (${res.pageCount} halaman) diekstrak: ${res.records.length} catatan SPS siap ditinjau.`
       );
       setActiveBatch({ ...res.batch, records: res.records });
-      await loadData();
+      await loadData(res.batch.id);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Gagal mengekstrak PDF historis bawaan.');
     } finally {
@@ -253,6 +271,37 @@ export function TemplatesAndImportView({
 
   const openReviewRecord = (rec: ImportRecord) => {
     const d = rec.extractedData || {};
+    const rawPersonnel = Array.isArray(d.sampling_personnel)
+      ? d.sampling_personnel.map((s) => String(s).trim()).filter(Boolean)
+      : String(d.sampling_personnel || d.assigned_personnel || '')
+          .split(/[,;\n]/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+    let initialMatrices: ExtractedMatrixItem[] = [];
+    if (Array.isArray(d.matrices)) {
+      initialMatrices = (d.matrices as Array<Record<string, unknown>>).map((m) => ({
+        matrix_name: String(m.matrix_name || ''),
+        sampling_point_count: Number(m.sampling_point_count || 1),
+        sampling_points: String(m.sampling_points || ''),
+        parameters: String(m.parameters || ''),
+        subcontracted_parameters: String(m.subcontracted_parameters || ''),
+        applicable_regulation: String(m.applicable_regulation || ''),
+      }));
+    } else if (d.matrix_name || d.parameters) {
+      initialMatrices = [
+        {
+          matrix_name: String(d.matrix_name || ''),
+          sampling_point_count: Number(d.sampling_point_count || 1),
+          sampling_points: String(d.sampling_points || ''),
+          parameters: String(d.parameters || ''),
+          subcontracted_parameters: String(d.subcontracted_parameters || ''),
+          applicable_regulation: String(d.applicable_regulation || ''),
+        },
+      ];
+    }
+
+    setModalError(null);
     setEditingRecord(rec);
     setEditFields({
       document_number: String(d.document_number || ''),
@@ -263,27 +312,49 @@ export function TemplatesAndImportView({
       job_name: String(d.job_name || ''),
       sampling_date: String(d.sampling_date || ''),
       sampling_location: String(d.sampling_location || ''),
+      sampling_personnel_text: rawPersonnel.join(', '),
+      sampling_activities: String(d.sampling_activities || d.job_name || ''),
       notes: String(d.notes || ''),
+      matrices: initialMatrices,
       resolveDuplicateAsSeparate: false,
     });
   };
 
+  const buildMergedExtractedData = () => {
+    const personnelArray = editFields.sampling_personnel_text
+      .split(/[,;\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return {
+      ...(editingRecord?.extractedData || {}),
+      document_number: editFields.document_number.trim(),
+      customer_name: editFields.customer_name.trim(),
+      customer_address: editFields.customer_address.trim(),
+      customer_pic: editFields.customer_pic.trim(),
+      pic_phone: editFields.pic_phone.trim(),
+      job_name: editFields.job_name.trim(),
+      sampling_date: editFields.sampling_date.trim(),
+      sampling_location: editFields.sampling_location.trim(),
+      sampling_personnel: personnelArray,
+      sampling_activities: editFields.sampling_activities.trim(),
+      notes: editFields.notes.trim(),
+      matrices: editFields.matrices.map((m) => ({
+        matrix_name: m.matrix_name.trim() || 'Umum',
+        sampling_point_count: Math.max(1, Number(m.sampling_point_count) || 1),
+        sampling_points: m.sampling_points.trim() || 'Sesuai ketentuan pelanggan',
+        parameters: m.parameters.trim() || '-',
+        subcontracted_parameters: m.subcontracted_parameters.trim(),
+        applicable_regulation: m.applicable_regulation.trim() || '-',
+      })),
+    };
+  };
+
   const handleSaveRecordDraft = async () => {
     if (!editingRecord) return;
+    setModalError(null);
     setError(null);
     try {
-      const merged = {
-        ...editingRecord.extractedData,
-        document_number: editFields.document_number,
-        customer_name: editFields.customer_name,
-        customer_address: editFields.customer_address,
-        customer_pic: editFields.customer_pic,
-        pic_phone: editFields.pic_phone,
-        job_name: editFields.job_name,
-        sampling_date: editFields.sampling_date,
-        sampling_location: editFields.sampling_location,
-        notes: editFields.notes,
-      };
+      const merged = buildMergedExtractedData();
       await apiFetch(`/api/import/records/${editingRecord.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ extractedData: merged, validationStatus: 'DRAFT' }),
@@ -291,27 +362,17 @@ export function TemplatesAndImportView({
       setEditingRecord(null);
       await loadData();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Gagal menyimpan draf baris impor.');
+      setModalError(err instanceof Error ? err.message : 'Gagal menyimpan draf baris impor.');
     }
   };
 
   const handleConfirmImportRecord = async () => {
     if (!editingRecord) return;
+    setModalError(null);
     setError(null);
     try {
       // Save edits first, then confirm
-      const merged = {
-        ...editingRecord.extractedData,
-        document_number: editFields.document_number,
-        customer_name: editFields.customer_name,
-        customer_address: editFields.customer_address,
-        customer_pic: editFields.customer_pic,
-        pic_phone: editFields.pic_phone,
-        job_name: editFields.job_name,
-        sampling_date: editFields.sampling_date,
-        sampling_location: editFields.sampling_location,
-        notes: editFields.notes,
-      };
+      const merged = buildMergedExtractedData();
       await apiFetch(`/api/import/records/${editingRecord.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ extractedData: merged }),
@@ -320,7 +381,7 @@ export function TemplatesAndImportView({
         method: 'POST',
         body: JSON.stringify({
           resolveDuplicateAsSeparate: editFields.resolveDuplicateAsSeparate,
-          overrideSpsNumber: editFields.document_number,
+          overrideSpsNumber: editFields.document_number.trim(),
         }),
       });
       setSuccessMsg(`SPS ${created.spsNumber} berhasil diimpor ke Arsip Dokumen & Pustaka Template.`);
@@ -328,7 +389,7 @@ export function TemplatesAndImportView({
       await loadData();
       onChanged();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Gagal mengonfirmasi impor SPS.');
+      setModalError(err instanceof Error ? err.message : 'Gagal mengonfirmasi impor SPS.');
     }
   };
 
@@ -627,6 +688,18 @@ export function TemplatesAndImportView({
                   <tbody className="divide-y divide-slate-100">
                     {activeBatch.records.map((rec) => {
                       const d = rec.extractedData || {};
+                      const matList = Array.isArray(d.matrices)
+                        ? (d.matrices as Array<Record<string, unknown>>)
+                        : d.matrix_name
+                        ? [{ matrix_name: d.matrix_name }]
+                        : [];
+                      const persList = Array.isArray(d.sampling_personnel)
+                        ? (d.sampling_personnel as string[])
+                        : [];
+                      const uniqueMatrixNames = Array.from(
+                        new Set(matList.map((m) => String(m.matrix_name || '').trim()).filter(Boolean))
+                      );
+
                       return (
                         <tr key={rec.id} className="hover:bg-slate-50/70">
                           <td className="px-4 py-3 tabular-nums font-mono text-slate-500">
@@ -637,10 +710,20 @@ export function TemplatesAndImportView({
                               {String(d.document_number || '(Nomor Kosong)')}
                             </div>
                             <div className="text-slate-700">{String(d.customer_name || '-')}</div>
+                            {persList.length > 0 && (
+                              <div className="text-[11px] text-slate-500 mt-0.5">
+                                {persList.length} petugas: {persList.slice(0, 2).join(', ')}
+                                {persList.length > 2 ? ` +${persList.length - 2}` : ''}
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3">
                             <div className="text-slate-800">{String(d.job_name || '-')}</div>
                             <div className="text-slate-500 tabular-nums">{String(d.sampling_date || '-')}</div>
+                            <div className="text-[11px] text-[#166534] mt-0.5 tabular-nums">
+                              {matList.length} baris matriks
+                              {uniqueMatrixNames.length > 0 ? `: ${uniqueMatrixNames.slice(0, 3).join(', ')}` : ''}
+                            </div>
                           </td>
                           <td className="px-4 py-3 space-y-1">
                             <StatusTag status={rec.validationStatus} />
@@ -743,23 +826,38 @@ export function TemplatesAndImportView({
       {/* Extraction Record Edit & Confirm Modal */}
       <ModalDialog
         open={Boolean(editingRecord)}
-        onClose={() => setEditingRecord(null)}
+        onClose={() => {
+          setModalError(null);
+          setEditingRecord(null);
+        }}
         title="Validasi & Konfirmasi Hasil Ekstraksi SPS"
         subtitle={
           editingRecord
             ? `Sumber halaman/baris #${editingRecord.sourcePage} · Status Duplikat: ${editingRecord.duplicateStatus}`
             : ''
         }
-        maxWidth="max-w-3xl"
+        maxWidth="max-w-5xl"
       >
         {editingRecord && (
           <div className="space-y-4">
+            {modalError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+                {modalError}
+              </div>
+            )}
+
+            {editingRecord.warnings?.length > 0 && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                {editingRecord.warnings.join(' · ')}
+              </div>
+            )}
+
             {editingRecord.duplicateStatus !== 'NONE' && (
               <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900 space-y-2">
                 <div className="font-semibold">
                   Potensi duplikat terdeteksi ({editingRecord.duplicateStatus}).
                 </div>
-                <label className="flex items-center gap-2">
+                <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={editFields.resolveDuplicateAsSeparate}
@@ -779,7 +877,7 @@ export function TemplatesAndImportView({
                   type="text"
                   value={editFields.document_number}
                   onChange={(e) => setEditFields({ ...editFields, document_number: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded"
+                  className="w-full px-3 py-2 border border-slate-300 rounded font-mono"
                 />
               </div>
               <div>
@@ -827,12 +925,42 @@ export function TemplatesAndImportView({
                   className="w-full px-3 py-2 border border-slate-300 rounded"
                 />
               </div>
-              <div className="sm:col-span-2">
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Alamat Pelanggan</label>
+                <input
+                  type="text"
+                  value={editFields.customer_address}
+                  onChange={(e) => setEditFields({ ...editFields, customer_address: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded"
+                />
+              </div>
+              <div>
                 <label className="block font-medium text-slate-700 mb-1">Lokasi Sampling</label>
                 <input
                   type="text"
                   value={editFields.sampling_location}
                   onChange={(e) => setEditFields({ ...editFields, sampling_location: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded"
+                />
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">
+                  Petugas Pengambil Contoh (pisahkan dengan koma)
+                </label>
+                <input
+                  type="text"
+                  value={editFields.sampling_personnel_text}
+                  onChange={(e) => setEditFields({ ...editFields, sampling_personnel_text: e.target.value })}
+                  placeholder="Nama Petugas 1, Nama Petugas 2"
+                  className="w-full px-3 py-2 border border-slate-300 rounded"
+                />
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Kegiatan Bagian A</label>
+                <input
+                  type="text"
+                  value={editFields.sampling_activities}
+                  onChange={(e) => setEditFields({ ...editFields, sampling_activities: e.target.value })}
                   className="w-full px-3 py-2 border border-slate-300 rounded"
                 />
               </div>
@@ -847,25 +975,163 @@ export function TemplatesAndImportView({
               </div>
             </div>
 
+            {/* Extracted Matrix Rows Editor */}
+            <div className="space-y-2 border-t border-slate-200 pt-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-slate-900">
+                  Daftar Matriks &amp; Parameter Contoh Uji ({editFields.matrices.length} baris)
+                </h3>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setEditFields({
+                      ...editFields,
+                      matrices: [
+                        ...editFields.matrices,
+                        {
+                          matrix_name: '',
+                          sampling_point_count: 1,
+                          sampling_points: '',
+                          parameters: '',
+                          subcontracted_parameters: '',
+                          applicable_regulation: '',
+                        },
+                      ],
+                    })
+                  }
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-[#166534] bg-[#f0fdf4] border border-[#25AC43]/40 rounded hover:bg-[#dcfce7] cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Tambah Baris Matriks</span>
+                </button>
+              </div>
+
+              {editFields.matrices.length === 0 ? (
+                <div className="p-3 rounded border border-dashed border-slate-300 text-xs text-slate-500 text-center">
+                  Belum ada baris matriks terekstrak. Klik &quot;Tambah Baris Matriks&quot; untuk melengkapi secara manual.
+                </div>
+              ) : (
+                <div className="max-h-72 overflow-y-auto border border-slate-200 rounded divide-y divide-slate-200">
+                  {editFields.matrices.map((mat, idx) => (
+                    <div key={idx} className="p-3 bg-slate-50/60 space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono font-semibold text-slate-600">Baris #{idx + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditFields({
+                              ...editFields,
+                              matrices: editFields.matrices.filter((_, i) => i !== idx),
+                            })
+                          }
+                          aria-label={`Hapus baris matriks ${idx + 1}`}
+                          className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Hapus</span>
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                        <div className="sm:col-span-3">
+                          <label className="block text-[11px] text-slate-600 mb-0.5">Matriks</label>
+                          <input
+                            type="text"
+                            value={mat.matrix_name}
+                            onChange={(e) => {
+                              const next = [...editFields.matrices];
+                              next[idx] = { ...mat, matrix_name: e.target.value };
+                              setEditFields({ ...editFields, matrices: next });
+                            }}
+                            placeholder="Emission Air / Wastewater"
+                            className="w-full px-2 py-1.5 border border-slate-300 rounded bg-white"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] text-slate-600 mb-0.5">Jumlah Titik</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={mat.sampling_point_count}
+                            onChange={(e) => {
+                              const next = [...editFields.matrices];
+                              next[idx] = {
+                                ...mat,
+                                sampling_point_count: Math.max(1, Number(e.target.value) || 1),
+                              };
+                              setEditFields({ ...editFields, matrices: next });
+                            }}
+                            className="w-full px-2 py-1.5 border border-slate-300 rounded bg-white tabular-nums"
+                          />
+                        </div>
+                        <div className="sm:col-span-7">
+                          <label className="block text-[11px] text-slate-600 mb-0.5">Titik Lokasi Sampling</label>
+                          <input
+                            type="text"
+                            value={mat.sampling_points}
+                            onChange={(e) => {
+                              const next = [...editFields.matrices];
+                              next[idx] = { ...mat, sampling_points: e.target.value };
+                              setEditFields({ ...editFields, matrices: next });
+                            }}
+                            placeholder="Incinerator / IPAL Outlet / dll"
+                            className="w-full px-2 py-1.5 border border-slate-300 rounded bg-white"
+                          />
+                        </div>
+                        <div className="sm:col-span-6">
+                          <label className="block text-[11px] text-slate-600 mb-0.5">Parameter Uji</label>
+                          <input
+                            type="text"
+                            value={mat.parameters}
+                            onChange={(e) => {
+                              const next = [...editFields.matrices];
+                              next[idx] = { ...mat, parameters: e.target.value };
+                              setEditFields({ ...editFields, matrices: next });
+                            }}
+                            className="w-full px-2 py-1.5 border border-slate-300 rounded bg-white"
+                          />
+                        </div>
+                        <div className="sm:col-span-6">
+                          <label className="block text-[11px] text-slate-600 mb-0.5">Regulasi / Baku Mutu</label>
+                          <input
+                            type="text"
+                            value={mat.applicable_regulation}
+                            onChange={(e) => {
+                              const next = [...editFields.matrices];
+                              next[idx] = { ...mat, applicable_regulation: e.target.value };
+                              setEditFields({ ...editFields, matrices: next });
+                            }}
+                            className="w-full px-2 py-1.5 border border-slate-300 rounded bg-white"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-slate-200">
               <button
                 type="button"
-                onClick={() => setEditingRecord(null)}
-                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded"
+                onClick={() => {
+                  setModalError(null);
+                  setEditingRecord(null);
+                }}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded cursor-pointer hover:bg-slate-50"
               >
                 Batal
               </button>
               <button
                 type="button"
                 onClick={handleSaveRecordDraft}
-                className="px-4 py-2 text-xs font-medium text-slate-800 bg-slate-100 border border-slate-300 rounded"
+                className="px-4 py-2 text-xs font-medium text-slate-800 bg-slate-100 border border-slate-300 rounded cursor-pointer hover:bg-slate-200"
               >
                 Simpan Draft
               </button>
               <button
                 type="button"
                 onClick={handleConfirmImportRecord}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-[#25AC43] hover:bg-[#1e8e36] rounded"
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-[#25AC43] hover:bg-[#1e8e36] rounded cursor-pointer"
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Konfirmasi &amp; Impor ke Arsip + Template</span>

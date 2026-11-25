@@ -2,5 +2,7 @@
   "name": "ANKAL Field Operations Management System",
   "description": "Sistem Manajemen Operasional Lapangan PT Analitika Kalibrasi Laboratorium (ANKAL) — Permintaan Sampling, Persetujuan, Penugasan Personel, Penjadwalan, Armada, dan Otomasi SPS.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

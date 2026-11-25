@@ -4,7 +4,7 @@ import path from 'node:path';
 import express, { type Request } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { count, desc, eq, and, inArray, sql } from 'drizzle-orm';
+import { asc, desc, eq, and, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import {
   auditLogs,
@@ -233,14 +233,16 @@ export function createApiRouter() {
 
       if (existing.length > 0) {
         const current = existing[0];
-        if (current.passwordHash) {
+        const isPreapprovedPlaceholder = current.uid.startsWith('preapproved:');
+        if (current.passwordHash || !isPreapprovedPlaceholder) {
           return res.status(409).json({
             code: 'EMAIL_EXISTS',
-            error: 'Email ini sudah terdaftar. Silakan masuk menggunakan kata sandi Anda.',
+            error:
+              'Email ini sudah terdaftar. Silakan masuk dengan kata sandi Anda atau melalui Akun Google.',
           });
         }
 
-        // Pre-approved by Superadmin or existing Google user without password yet
+        // Pre-approved by Superadmin: allow setting initial password on first claim
         const [updated] = await db
           .update(users)
           .set({
@@ -283,8 +285,7 @@ export function createApiRouter() {
         });
       }
 
-      const [{ total }] = await db.select({ total: count() }).from(users);
-      const isInitialMaster = Number(total) === 0 || normalizedEmail === MASTER_ADMIN_EMAIL;
+      const isInitialMaster = normalizedEmail === MASTER_ADMIN_EMAIL;
       const initialRole: AppRole = isInitialMaster ? 'MANAGEMENT' : 'KAE_SALES';
       const initialApproval: ApprovalStatus = isInitialMaster ? 'APPROVED' : 'PENDING';
 
@@ -3341,7 +3342,7 @@ export function createApiRouter() {
     try {
       const [batches, records] = await Promise.all([
         db.select().from(spsImportBatches).orderBy(desc(spsImportBatches.uploadedAt)),
-        db.select().from(spsImportRecords),
+        db.select().from(spsImportRecords).orderBy(asc(spsImportRecords.sourcePage)),
       ]);
       res.json(
         batches.map((b) => ({
@@ -3727,9 +3728,9 @@ export function createApiRouter() {
           }));
 
           const personnelNames = Array.isArray(data.sampling_personnel)
-            ? data.sampling_personnel.map(String)
-            : String(data.assigned_personnel || '')
-                .split(/[,;]/)
+            ? data.sampling_personnel.map((s) => String(s).trim()).filter(Boolean)
+            : String(data.sampling_personnel || data.assigned_personnel || '')
+                .split(/[,;\n]/)
                 .map((s) => s.trim())
                 .filter(Boolean);
 

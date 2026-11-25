@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { and, count, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { adminAuth } from '../lib/firebase-admin.ts';
 import { db } from '../db/index.ts';
 import { notifications, userSessions, users } from '../db/schema.ts';
@@ -227,9 +227,8 @@ export async function getOrCreateDbUser(decoded: {
     return updated[0];
   }
 
-  // First user in system or workspace owner defaults to Superadmin (MANAGEMENT + APPROVED)
-  const [{ total }] = await db.select({ total: count() }).from(users);
-  const isInitialMaster = Number(total) === 0 || normalizedEmail === MASTER_ADMIN_EMAIL;
+  // Only designated Master Admin email auto-approves as MANAGEMENT; all other new users require Superadmin approval
+  const isInitialMaster = normalizedEmail === MASTER_ADMIN_EMAIL;
 
   const initialRole: AppRole = isInitialMaster ? 'MANAGEMENT' : 'KAE_SALES';
   const initialApproval: ApprovalStatus = isInitialMaster ? 'APPROVED' : 'PENDING';
